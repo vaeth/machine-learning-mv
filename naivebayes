@@ -1,0 +1,280 @@
+#!/usr/bin/env perl
+BEGIN { require 5.012 }
+package NaiveBayes v1.0.0;
+
+use warnings;
+use strict;
+use integer;
+use feature 'say';
+
+use Getopt::Long 2.24 ();
+use version 0.77 ();
+
+=encoding UTF-8
+
+=head1 NAME
+
+naivebayes - Use naive Bayes machine learning to sort an email into an mbox
+
+=head1 SYNOPSIS
+
+B<naivebayes> I<mbox1> I<mbox2> ... I<mboxn> I<email>
+
+Sort email into the best matching mbox according to naive Bayes.
+Use B<-> as filename for standard input.
+
+=head1 DESCRIPTION
+
+Using the classifications given by the training set I<mbox1>, ... I<mboxn>,
+try to detect which classification the content of the single I<email>
+belongs to.
+
+The algorithm is a multinomial naive Bayes (with Laplace smoothing),
+using as feature variables the set of words occuring in I<email>.
+The training happens each time the program is called.
+
+=back
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--help> or B<-h>
+
+Display brief help
+
+=item B<--man> or B<-?>
+
+Display extended help as a manpage
+
+=item B<--verbose> or B<-v>
+
+Output likelyhoods for each match verbosely.
+The printed likelyhoods still have to be divided by the total number of emails
+to get a probability value (less than 1).
+
+=item B<--version> or B<-V>
+
+Output current version and exit
+
+=item B<-->
+
+=head1 AUTHOR
+
+Martin VE<auml>th E<lt>martin@mvath.deE<gt>
+
+=cut
+
+# Global variables:
+
+our $VERSION;
+my $name = 'naivebayes';
+
+# Global variables used for the options:
+
+my $verbose = '';
+
+sub pod2usage {
+	require Pod::Usage;
+	&Pod::Usage::pod2usage
+}
+
+sub message {
+	print(STDERR $name, ': ', @_, "\n")
+}
+
+sub debug {
+	&message('debug: ', @_)
+}
+
+sub warning {
+	&message('warning: ', @_)
+}
+
+sub error {
+	&message('error: ', @_)
+}
+
+sub fatal {
+	&error;
+	exit(1)
+}
+
+sub version {
+	print($name, ' ', $VERSION, "\n");
+	exit(0)
+}
+
+{
+	package Mbox v0.0.0;
+	sub new {
+		my $class = shift();
+		my $filename = shift();
+		my $self = bless({
+			name => $filename,
+			isfile => undef,
+			handle => undef,
+			prevlines => []
+		}, $class);
+		if ($filename eq '-') {
+			$self->{isfile} = '';
+			$self->{handle} = \*STDIN;
+			return $self
+		}
+		open($self->{handle}, '<', $filename) ||
+			&fatal('cannot open: ', $filename);
+		$self
+	}
+	sub name {
+		my $self = shift();
+		$self->{name}
+	}
+	sub close {
+		my $self = shift();
+		return 1 unless ($self->{isfile});
+		&fatal('cannot close file: ', $self->{name})
+			unless (close($self->{handle}));
+		$self->{handle} = undef;
+		$self->{isfile} = '';
+		1
+	}
+	sub DESTROY {
+		my $self = shift();
+		$self->close()
+	}
+	sub readline {
+		my $self = shift();
+		my $prevlines = $self->{prevlines};
+		if (@$prevlines) {
+			return shift(@$prevlines)
+		}
+		return undef unless (defined($self->{handle}));
+		my $line = readline($self->{handle});
+		unless (defined($line)) {
+			$self->close();
+			return undef
+		}
+		$line =~ s{[\r\n]+$}{};
+		$line
+	}
+	sub unreadline {
+		my $self = shift();
+		my $line = shift();
+		my $prevlines = $self->{prevlines};
+		push(@$prevlines, $line)
+	}
+	sub email {
+		my $self = shift();
+		my $email = $self->readline();
+		return undef unless (defined($email));
+		if ($email =~ m{^From .+\@.+ .}) {
+			for (;;) {
+				my $line = $self->readline();
+				return undef unless (defined($line));
+				last if ($line eq '')
+			}
+			$email = '';
+		}
+		my $prevempty = '';
+		for (;;) {
+			my $line = $self->readline();
+			return $email unless (defined($line));
+			if ($prevempty) {
+				if ($line =~ m{^From .+\@.+ .}) {
+					$self->unreadline($line);
+					return $email
+				}
+				$email .= "\n"
+			}
+			if ($line eq '') {
+				$prevempty = 1;
+				next
+			}
+			$prevempty = '';
+			$email .= $line;
+			$email .= "\n"
+		}
+	}
+}
+
+# Parse Options:
+
+Getopt::Long::Configure(qw(gnu_getopt));
+Getopt::Long::GetOptions(
+	'help|h', sub { &pod2usage(0) },
+	'man|?', sub { &pod2usage(-verbose => 2, -exit => 0) },
+	'verbose|v', \$verbose,
+	'version|V', \&version
+) or &pod2usage(2);
+
+# Set default variables according to the options:
+
+&fatal('at least 3 arguments needed') unless (scalar(@ARGV) > 2);
+for my $file (@ARGV) {
+	next if ($file eq '-');
+	&fatal('argument must not be empty') if ($file eq '');
+	&fatal('argument is not a file: ', $file) unless (-f $file)
+}
+
+my %words = ();
+{
+	my $mbox = Mbox->new(pop(@ARGV));
+	for my $word (split(' ', $mbox->email() // '')) {
+		$words{$word} = [-1, 0, 0];
+	}
+}
+
+# The first index of $words{$word} is the largest mbox index with $word.
+# The second index of $words{$word} is the largest email index with $word.
+# The third index is the total number of emails with $word in current mbox.
+
+my $result;
+my $maximal_likelyhood = -1;
+for(my $i = 0; $i < @ARGV; ++$i) {
+	my $name = $ARGV[$i];
+	my $mbox = Mbox->new($name);
+	my $emails = 0;
+	while(defined(my $email = $mbox->email())) {
+		++$emails;
+		for my $word (split(' ', $email)) {
+			next unless (exists($words{$word}));
+			my $arr = $words{$word};
+			if ($arr->[0] != $i) {
+				$arr->[0] = $i;
+				$arr->[1] = $emails;
+				$arr->[2] = 1
+			} elsif ($arr->[1] != $emails) {
+				$arr->[1] = $emails;
+				++($arr->[2])
+			}
+		}
+	}
+	&warning('mbox contains no emails: ', $mbox->name()) unless ($emails);
+	# $p is the probability of having mbox $i, multiplied with the
+	# total (in all mboxes) number of emails (+2 for Laplace smoothing).
+	# We add 1 for Laplace smoothing to treat empty mboxes:
+	my $p = $emails + 1;
+	# In order to apply Laplace smoothing, we increase the number of
+	# observations by the number of possible outcomes.
+	$emails += @ARGV;
+	# Now we multiply this probability successively with the relative
+	# probability of having the feature (word) in mbox $i
+	# (here we use the naive Bayes hypothesis)
+	for my $word (keys(%words)) {
+		my $arr = $words{$word};
+		# In order to apply Laplace smoothing (avoid 0 factor),
+		# we add 1 to the number of hits.
+		no integer;
+		$p *= ((($arr->[0] == $i) ? $arr->[1] + 1 : 1) / $emails)
+	}
+	say($name, ': ', $p) if ($verbose);
+	no integer;
+	if ($p > $maximal_likelyhood) {
+		$maximal_likelyhood = $p;
+		$result = $name
+	}
+}
+print('Most likely: ') if ($verbose);
+say($result);
+
+1;

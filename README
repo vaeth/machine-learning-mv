@@ -1,0 +1,11 @@
+machine-learning - Some Machine Learning Experiments
+
+The license of the package is MIT.
+
+Currently, only the following binary is included:
+
+naivebayes:
+A perl script to "sort" an email into mboxes, using a
+naive Bayes algorithm, assuming a multinomial distribution of
+the words in the email.
+
