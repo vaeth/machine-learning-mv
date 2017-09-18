@@ -1,0 +1,8 @@
+#compdef naivebayes
+_arguments -s -S : \
+'(* -)'{'--help','-h'}'[print a brief help]' \
+'(* -)'{'--man','-\\?'}'[show extended help as a manpage]' \
+'(* -)'{'--version','-V'}'[print version]' \
+{'(--verbose)-v','(-v)--verbose'}'[verbose]' \
+{'(--spambox)-s+','(-s)--spambox='}'[spambox; use specified emails\:matches]:emails\:matches:()' \
+'*:files:_files'

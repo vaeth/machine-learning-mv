@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 BEGIN { require 5.012 }
-package NaiveBayes v1.0.0;
+package NaiveBayes v2.0.0;
 
 use warnings;
 use strict;
@@ -18,16 +18,16 @@ naivebayes - Use naive Bayes machine learning to sort an email into an mbox
 
 =head1 SYNOPSIS
 
-B<naivebayes> I<mbox1> I<mbox2> ... I<mboxn> I<email>
+B<naivebayes> I<options> I<mbox1> I<mbox2> ... I<mboxn> I<email>
 
-Sort email into the best matching mbox according to naive Bayes.
-Use B<-> as filename for standard input.
+Sort email into the best matching mbox (and possibly a further spam mbox)
+according to naive Bayes. Use B<-> as filename for standard input.
 
 =head1 DESCRIPTION
 
-Using the classifications given by the training set I<mbox1>, ... I<mboxn>,
-try to detect which classification the content of the single I<email>
-belongs to.
+Using the classifications given by the training set I<mbox1>, ... I<mboxn>
+(and possibly and unclassified mbox, e.g. for spam), try to detect which
+classification the content of the single I<email> belongs to.
 
 The algorithm is a multinomial naive Bayes (with Laplace smoothing),
 using as feature variables the set of words occuring in I<email>.
@@ -47,11 +47,21 @@ Display brief help
 
 Display extended help as a manpage
 
+=item B<--spambox=>I<emails>B<:>I<matches> or B<-s>I<emails>B<:>I<matches>
+
+Include a purely virtual spambox file named B<--spambox>.
+This (nonexistent) file is assumed to contain all spam emails received so far.
+The integer number I<email> is the number of virtual emails in B<--spambox>.
+The (not necessarily integer) number I<matches> denotes the average
+(geometric mean) of the number of virtual emails in which a word from I<email>
+is found in B<--spambox>.
+The closer the number I<matches> is to I<emails> (and the larger I<emails> is),
+the larger the likelyhoood that I<email> is classified to belong into
+B<--spambox>.
+
 =item B<--verbose> or B<-v>
 
 Output likelyhoods for each match verbosely.
-The printed likelyhoods still have to be divided by the total number of emails
-to get a probability value (less than 1).
 
 =item B<--version> or B<-V>
 
@@ -70,9 +80,11 @@ Martin VE<auml>th E<lt>martin@mvath.deE<gt>
 our $VERSION;
 my $name = 'naivebayes';
 
-# Global variables used for the options:
+# Global option variables:
 
 my $verbose = '';
+my $spambox = '';
+my $spammatches = undef;
 
 sub pod2usage {
 	require Pod::Usage;
@@ -204,12 +216,25 @@ Getopt::Long::GetOptions(
 	'help|h', sub { &pod2usage(0) },
 	'man|?', sub { &pod2usage(-verbose => 2, -exit => 0) },
 	'verbose|v', \$verbose,
+	'spambox|s=s', \$spambox,
 	'version|V', \&version
 ) or &pod2usage(2);
 
 # Set default variables according to the options:
 
-&fatal('at least 3 arguments needed') unless (scalar(@ARGV) > 2);
+if ($spambox eq '') {
+	&fatal('at least 3 arguments needed (or --spambox)') unless (scalar(@ARGV) >= 3)
+} else {
+	&fatal('at least 2 arguments needed with --spambox') unless (scalar(@ARGV) >= 2);
+	unless($spambox =~ m{(\d+)\:(\d+(?:\.\d*)?|\.d*)}) {
+		&fatal('--spambox argument must have the form <emails>:<matches>')
+	}
+	use bignum;
+	$spambox = $1;
+	no integer;
+	$spammatches = $2;
+	&fatal('--spambox matches must not be larger than number of emails') if ($spammatches > $spambox)
+}
 for my $file (@ARGV) {
 	next if ($file eq '-');
 	&fatal('argument must not be empty') if ($file eq '');
@@ -222,6 +247,7 @@ my %words = ();
 	for my $word (split(' ', $mbox->email() // '')) {
 		$words{$word} = [-1, 0, 0];
 	}
+	&fatal('email must not be empty') unless(%words)
 }
 
 # The first index of $words{$word} is the largest mbox index with $word.
@@ -230,51 +256,82 @@ my %words = ();
 
 my $result;
 my $maximal_likelyhood = -1;
-for(my $i = 0; $i < @ARGV; ++$i) {
-	my $name = $ARGV[$i];
-	my $mbox = Mbox->new($name);
-	my $emails = 0;
-	while(defined(my $email = $mbox->email())) {
-		++$emails;
-		for my $word (split(' ', $email)) {
-			next unless (exists($words{$word}));
-			my $arr = $words{$word};
-			if ($arr->[0] != $i) {
-				$arr->[0] = $i;
-				$arr->[1] = $emails;
-				$arr->[2] = 1
-			} elsif ($arr->[1] != $emails) {
-				$arr->[1] = $emails;
-				++($arr->[2])
+my $classes = scalar(@ARGV);
+my $total_emails;
+{
+	use bignum;
+	$total_emails = 0
+}
+if ($spambox ne '') {
+	++$classes
+}
+for(my $i = 0; $i < $classes; ++$i) {
+	my ($nospam, $name, $emails);
+	if (($nospam = ($i < @ARGV))) {
+		$name = $ARGV[$i];
+		my $mbox = Mbox->new($name);
+		use bignum;
+		$emails = 0;
+		while(defined(my $email = $mbox->email())) {
+			next unless($email =~ m{\S});
+			++$emails;
+			for my $word (split(' ', $email)) {
+				next unless (exists($words{$word}));
+				my $arr = $words{$word};
+				if ($arr->[0] != $i) {
+					$arr->[0] = $i;
+					$arr->[1] = $emails;
+					$arr->[2] = 1
+				} elsif ($arr->[1] != $emails) {
+					$arr->[1] = $emails;
+					++($arr->[2])
+				}
 			}
 		}
+		&warning('mbox contains no emails: ', $mbox->name()) unless ($emails)
+	} else {
+		$name = '--spambox';
+		use bignum;
+		$emails = $spambox
 	}
-	&warning('mbox contains no emails: ', $mbox->name()) unless ($emails);
+	use bignum;
+	$total_emails += $emails;
 	# $p is the probability of having mbox $i, multiplied with the
-	# total (in all mboxes) number of emails (+2 for Laplace smoothing).
+	# total (in all mboxes) number of emails.
 	# We add 1 for Laplace smoothing to treat empty mboxes:
 	my $p = $emails + 1;
 	# In order to apply Laplace smoothing, we increase the number of
 	# observations by the number of possible outcomes.
-	$emails += @ARGV;
+	$emails += $classes;
 	# Now we multiply this probability successively with the relative
 	# probability of having the feature (word) in mbox $i
 	# (here we use the naive Bayes hypothesis)
-	for my $word (keys(%words)) {
-		my $arr = $words{$word};
-		# In order to apply Laplace smoothing (avoid 0 factor),
-		# we add 1 to the number of hits.
+	if ($nospam) {
+		for my $word (keys(%words)) {
+			my $arr = $words{$word};
+			# In order to apply Laplace smoothing (avoid 0 factor),
+			# we add 1 to the number of hits.
+			no integer;
+			use bignum;
+			$p *= $arr->[1] + 1 if ($arr->[0] == $i);
+			$p /= $emails
+		}
+	} else {
 		no integer;
-		$p *= ((($arr->[0] == $i) ? $arr->[1] + 1 : 1) / $emails)
+		$p *= (($spammatches + 1) / $emails) ** scalar(%words)
 	}
-	say($name, ': ', $p) if ($verbose);
+	say($name, ': ', sprintf("%.5g", $p)) if ($verbose);
 	no integer;
 	if ($p > $maximal_likelyhood) {
 		$maximal_likelyhood = $p;
 		$result = $name
 	}
 }
-print('Most likely: ') if ($verbose);
+if ($verbose) {
+	say('To get true likelyhood values divide all above numbers by ',
+		($total_emails + $classes)); # Add for Laplace smoothing
+	print('Most likely: ')
+}
 say($result);
 
 1;
