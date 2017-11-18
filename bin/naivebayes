@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 BEGIN { require 5.012 }
-package NaiveBayes v2.0.0;
+package NaiveBayes v2.0.1;
 
 use warnings;
 use strict;
@@ -107,7 +107,7 @@ sub error {
 	&message('error: ', @_)
 }
 
-sub fatal {
+sub NaiveBayes::fatal {
 	&error;
 	exit(1)
 }
@@ -118,13 +118,16 @@ sub version {
 }
 
 {
-	package Mbox v0.0.0;
+	package Mbox v0.0.1;
+	sub fatal {
+		&NaiveBayes::fatal
+	}
 	sub new {
 		my $class = shift();
 		my $filename = shift();
 		my $self = bless({
 			name => $filename,
-			isfile => undef,
+			isfile => 1,
 			handle => undef,
 			prevlines => []
 		}, $class);
@@ -144,11 +147,11 @@ sub version {
 	sub close {
 		my $self = shift();
 		return 1 unless ($self->{isfile});
-		&fatal('cannot close file: ', $self->{name})
-			unless (close($self->{handle}));
-		$self->{handle} = undef;
 		$self->{isfile} = '';
-		1
+		my $ret = close($self->{handle});
+		$self->{handle} = undef;
+		&fatal('cannot close file: ', $self->{name}) unless($ret);
+		$ret
 	}
 	sub DESTROY {
 		my $self = shift();
