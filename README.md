@@ -3,6 +3,7 @@
 Machine Learning Experiment(s)
 
 The license of the package is MIT.
+SPDX-License-Identifier: MIT
 
 For installation, copy the content of `bin/` into your path.
 For zsh completion support, copy the content of `zsh/` into your
